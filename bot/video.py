@@ -109,6 +109,7 @@ async def download_clip(
     """Скачивает клип по URL в файл dest и проверяет, что это MP4, а не HTML."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     download_url = await _resolve_clip_download_url(session, url)
+    log.info("Download URL: %s", download_url)
     try:
         async with session.get(download_url) as resp:
             if resp.status != 200:
