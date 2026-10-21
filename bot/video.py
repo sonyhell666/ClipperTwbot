@@ -9,12 +9,11 @@ Twitch отдаёт клипы в 16:9. Чтобы получить вертик
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from pathlib import Path
 from urllib.parse import quote
-
-
 
 import aiohttp
 
@@ -79,8 +78,7 @@ async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: s
                 # В токене clip_uri указывает на конкретное качество — используем его
                 if sig and tok:
                     try:
-                        import json as _json
-                        tok_data = _json.loads(tok)
+                        tok_data = json.loads(tok)
                         clip_uri = tok_data.get("clip_uri")
                         if clip_uri:
                             url = clip_uri
@@ -105,20 +103,35 @@ async def download_clip(
     dest: Path,
     *,
     chunk_size: int = 1 << 16,
+    max_attempts: int = 5,
 ) -> Path:
     """Скачивает клип по URL в файл dest и проверяет, что это MP4, а не HTML."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    download_url = await _resolve_clip_download_url(session, url)
-    log.info("Download URL: %s", download_url)
-    try:
-        async with session.get(download_url) as resp:
-            if resp.status != 200:
+    last_status: int | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        download_url = await _resolve_clip_download_url(session, url)
+        log.info("Download attempt %d/%d for %s", attempt, max_attempts, url)
+        try:
+            async with session.get(download_url) as resp:
+                if resp.status == 200:
+                    with dest.open("wb") as fh:
+                        async for chunk in resp.content.iter_chunked(chunk_size):
+                            fh.write(chunk)
+                    break
+                last_status = resp.status
+                if resp.status == 404 and attempt < max_attempts:
+                    # Свежесозданные клипы могут отдавать 404, пока MP4 не опубликован.
+                    await asyncio.sleep(min(2 ** (attempt - 1), 8))
+                    continue
                 raise VideoError(f"Не удалось скачать клип: HTTP {resp.status}")
-            with dest.open("wb") as fh:
-                async for chunk in resp.content.iter_chunked(chunk_size):
-                    fh.write(chunk)
-    except aiohttp.ClientError as exc:
-        raise VideoError(f"Сетевая ошибка при скачивании клипа: {exc}") from exc
+        except aiohttp.ClientError as exc:
+            if attempt < max_attempts:
+                await asyncio.sleep(min(2 ** (attempt - 1), 8))
+                continue
+            raise VideoError(f"Сетевая ошибка при скачивании клипа: {exc}") from exc
+    else:
+        raise VideoError(f"Не удалось скачать клип: HTTP {last_status or 404}")
 
     if dest.stat().st_size == 0:
         raise VideoError("Скачанный файл клипа пуст")
