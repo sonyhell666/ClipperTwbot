@@ -12,6 +12,9 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
+from urllib.parse import quote
+
+
 
 import aiohttp
 
@@ -76,7 +79,7 @@ async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: s
                 url = qualities[0].get("sourceURL")
                 if url:
                     if sig and tok:
-                        url += f"?sig={sig}&token={tok}"
+                        url = f"{url}?sig={sig}&token={quote(tok)}"
                     return url
     except Exception as exc:  # noqa: BLE001
         log.debug("GQL clip URL resolution failed for %s: %s", clip_url, exc)
