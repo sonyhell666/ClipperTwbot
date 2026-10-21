@@ -49,7 +49,8 @@ async def main() -> None:
 
     # 2) HTTP-сессия для скачивания видео
     http_session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=180)
+        timeout=aiohttp.ClientTimeout(total=180),
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
     )
 
     # 3) Twitch Helix API
