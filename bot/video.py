@@ -61,12 +61,17 @@ async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: s
             data = await resp.json()
             clip = (data or [{}])[0].get("data", {}).get("clip") or {}
             assets = clip.get("assets") or []
+            token = clip.get("playbackAccessToken") or {}
+            sig = token.get("signature") or ""
+            tok = token.get("value") or ""
             for asset in assets:
                 if asset.get("aspectRatio", 0) > 1:  # LANDSCAPE
                     qualities = asset.get("videoQualities") or []
                     if qualities:
                         url = qualities[0].get("sourceURL")
                         if url:
+                            if sig and tok:
+                                url += f"?sig={sig}&token={tok}"
                             return url
     except Exception as exc:  # noqa: BLE001
         log.debug("GQL clip URL resolution failed for %s: %s", clip_url, exc)
