@@ -1,0 +1,22 @@
+# docker compose up -d — поднимает бота и перезапускает его после перезагрузки сервера
+
+services:
+  bot:
+    build: .
+    image: twitchclipbot:latest
+    container_name: twitchclipbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # SQLite-база и временные клипы хранятся на хосте,
+      # чтобы данные не терялись при пересборке контейнера
+      - ./data:/app/data
+    environment:
+      - TZ=UTC
+      - DB_PATH=/app/data/bot.sqlite3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
