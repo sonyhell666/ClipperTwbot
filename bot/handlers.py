@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -420,12 +421,15 @@ async def process_oauth_url(
         login, twitch_user_id = await fetch_login(
             token_data["access_token"], config.twitch_client_id
         )
+        expires_in = int(token_data.get("expires_in", 14400))
+        expires_at = str(time.time() + expires_in)
         await db.update_user_twitch_auth(
             message.from_user.id,
             twitch_login=login,
             access_token=token_data["access_token"],
             refresh_token=token_data.get("refresh_token", ""),
             twitch_user_id=twitch_user_id,
+            token_expires_at=expires_at,
         )
         listener.subscribe(login)
     except Exception as exc:  # noqa: BLE001

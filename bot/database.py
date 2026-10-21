@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
     twitch_access_token  TEXT,
     twitch_refresh_token TEXT,
     twitch_user_id     TEXT,
+    twitch_token_expires_at TEXT,
     created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -97,6 +98,7 @@ class Database:
             ("twitch_access_token", "TEXT"),
             ("twitch_refresh_token", "TEXT"),
             ("twitch_user_id", "TEXT"),
+            ("twitch_token_expires_at", "TEXT"),
         ):
             if column not in columns:
                 await self._conn.execute(
@@ -135,7 +137,7 @@ class Database:
             """
             SELECT telegram_id, twitch_nick, twitch_login,
                    twitch_access_token, twitch_refresh_token, twitch_user_id,
-                   created_at
+                   twitch_token_expires_at, created_at
             FROM users WHERE telegram_id = ?
             """,
             (telegram_id,),
@@ -185,7 +187,8 @@ class Database:
         async with conn.execute(
             """
             SELECT telegram_id, twitch_nick, twitch_login,
-                   twitch_access_token, twitch_refresh_token, twitch_user_id
+                   twitch_access_token, twitch_refresh_token, twitch_user_id,
+                   twitch_token_expires_at
             FROM users WHERE twitch_nick = ?
             """,
             (twitch_nick.strip().lower(),),
@@ -259,6 +262,7 @@ class Database:
         access_token: str,
         refresh_token: str = "",
         twitch_user_id: str = "",
+        token_expires_at: str = "",
     ) -> None:
         """Записывает OAuth-данные пользователя после авторизации Twitch (UPSERT)."""
         conn = self._require_conn()
@@ -266,14 +270,16 @@ class Database:
             """
             INSERT INTO users (
                 telegram_id, twitch_nick, twitch_login,
-                twitch_access_token, twitch_refresh_token, twitch_user_id
+                twitch_access_token, twitch_refresh_token, twitch_user_id,
+                twitch_token_expires_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 twitch_login = excluded.twitch_login,
                 twitch_access_token = excluded.twitch_access_token,
                 twitch_refresh_token = excluded.twitch_refresh_token,
                 twitch_user_id = excluded.twitch_user_id,
+                twitch_token_expires_at = excluded.twitch_token_expires_at,
                 twitch_nick = excluded.twitch_nick
             """,
             (
@@ -283,6 +289,34 @@ class Database:
                 access_token.strip(),
                 refresh_token.strip(),
                 twitch_user_id.strip(),
+                token_expires_at.strip(),
+            ),
+        )
+        await conn.commit()
+
+    async def update_user_tokens(
+        self,
+        telegram_id: int,
+        *,
+        access_token: str,
+        refresh_token: str,
+        token_expires_at: str = "",
+    ) -> None:
+        """Обновляет только OAuth-токены (после refresh)."""
+        conn = self._require_conn()
+        await conn.execute(
+            """
+            UPDATE users
+            SET twitch_access_token = ?,
+                twitch_refresh_token = ?,
+                twitch_token_expires_at = ?
+            WHERE telegram_id = ?
+            """,
+            (
+                access_token.strip(),
+                refresh_token.strip(),
+                token_expires_at.strip(),
+                telegram_id,
             ),
         )
         await conn.commit()
@@ -351,6 +385,16 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
         return int(row[0]) if row else 0
+
+    async def delete_old_clips(self, hours: int = 24) -> int:
+        """Удаляет клипы старше указанного числа часов; возвращает количество удалённых."""
+        conn = self._require_conn()
+        cur = await conn.execute(
+            "DELETE FROM clips WHERE created_at < datetime('now', ?)",
+            (f"-{hours} hours",),
+        )
+        await conn.commit()
+        return int(cur.rowcount or 0)
 
     async def clips_per_channel(self, limit: int = 10) -> list[dict[str, Any]]:
         """Топ каналов по числу созданных клипов."""

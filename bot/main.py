@@ -66,6 +66,8 @@ async def main() -> None:
         height=config.video_height,
         wait_timeout=config.clip_wait_timeout,
         poll_interval=config.clip_poll_interval,
+        client_id=config.twitch_client_id,
+        client_secret=config.twitch_client_secret,
     )
 
     # 5) Telegram bot / dispatcher
@@ -115,11 +117,29 @@ async def main() -> None:
         listener.subscribe(u["twitch_nick"])
     await listener.start()
 
-    # 7) Запуск Telegram polling
+    # 7) Периодическая очистка старых клипов из БД (>24 ч)
+    async def cleanup_loop() -> None:
+        while True:
+            try:
+                deleted = await db.delete_old_clips(hours=24)
+                if deleted:
+                    log.info("Удалено старых клипов из БД: %d", deleted)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Ошибка при очистке клипов: %s", exc)
+            await asyncio.sleep(3600)  # раз в час
+
+    cleanup_task = asyncio.create_task(cleanup_loop())
+
+    # 8) Запуск Telegram polling
     log.info("Бот запущен. Админ: %s. Каналов на прослушке: %d", config.admin_id, len(listener.channels))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         log.info("Останавливаю бота…")
         await listener.stop()
         await api.close()

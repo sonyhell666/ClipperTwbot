@@ -171,3 +171,68 @@ async def test_clip_duration_isolated_per_user(db: Database) -> None:
     assert await db.get_clip_duration(891) == 20
     assert await db.get_clip_duration(892) == 60
 
+
+async def test_update_user_tokens(db: Database) -> None:
+    """Обновление только токенов без затрагивания ника/логина."""
+    await db.update_user_twitch_auth(
+        900,
+        twitch_login="tokuser",
+        access_token="old_access",
+        refresh_token="old_refresh",
+        twitch_user_id="555",
+    )
+    await db.update_user_tokens(
+        900,
+        access_token="new_access",
+        refresh_token="new_refresh",
+        token_expires_at="9999999999",
+    )
+    user = await db.get_user(900)
+    assert user is not None
+    assert user["twitch_nick"] == "tokuser"
+    assert user["twitch_access_token"] == "new_access"
+    assert user["twitch_refresh_token"] == "new_refresh"
+    assert user["twitch_token_expires_at"] == "9999999999"
+
+
+async def test_update_user_twitch_auth_saves_expires_at(db: Database) -> None:
+    """expires_at сохраняется при OAuth-флоу."""
+    await db.update_user_twitch_auth(
+        901,
+        twitch_login="expuser",
+        access_token="acc",
+        refresh_token="ref",
+        twitch_user_id="777",
+        token_expires_at="1234567890",
+    )
+    user = await db.get_user(901)
+    assert user is not None
+    assert user["twitch_token_expires_at"] == "1234567890"
+
+
+async def test_delete_old_clips(db: Database) -> None:
+    """Клипы старше 24 ч удаляются, свежие остаются."""
+    await db.upsert_user(1000, "cleanup_user")
+    # вставим клип с датой 2 дня назад вручную
+    conn = db._require_conn()
+    await conn.execute(
+        "INSERT INTO clips (user_id, twitch_nick, clip_url, created_at) VALUES (?, ?, ?, datetime('now', '-2 days'))",
+        (1000, "cleanup_user", "https://clips.twitch.tv/old"),
+    )
+    await db.add_clip(1000, "cleanup_user", "https://clips.twitch.tv/fresh")
+    await conn.commit()
+
+    deleted = await db.delete_old_clips(hours=24)
+    assert deleted == 1
+    remaining = await db.user_clips(1000)
+    assert len(remaining) == 1
+    assert remaining[0]["clip_url"] == "https://clips.twitch.tv/fresh"
+
+
+async def test_delete_old_clips_nothing_to_delete(db: Database) -> None:
+    """Если старых клипов нет — возвращает 0."""
+    await db.upsert_user(1001, "fresh_user")
+    await db.add_clip(1001, "fresh_user", "https://clips.twitch.tv/new")
+    assert await db.delete_old_clips(hours=24) == 0
+    assert await db.count_clips(1001) == 1
+

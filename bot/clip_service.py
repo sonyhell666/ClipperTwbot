@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from .twitch_api import (
     TwitchAPI,
     TwitchAPIError,
 )
+from .twitch_oauth import refresh_token as _oauth_refresh
 from .video import VideoError, download_clip, make_vertical
 
 log = logging.getLogger(__name__)
@@ -53,6 +55,8 @@ class ClipService:
         height: int = 1920,
         wait_timeout: int = 30,
         poll_interval: int = 5,
+        client_id: str = "",
+        client_secret: str = "",
     ) -> None:
         self._api = api
         self._db = db
@@ -61,6 +65,8 @@ class ClipService:
         self._height = height
         self._wait_timeout = wait_timeout
         self._poll_interval = poll_interval
+        self._client_id = client_id
+        self._client_secret = client_secret
 
     async def _download_and_process(
         self,
@@ -90,6 +96,64 @@ class ClipService:
                 log.debug("Не удалось удалить исходный клип: %s", exc)
         return result
 
+    async def _get_valid_token(
+        self, telegram_id: int, user_row: dict
+    ) -> str | None:
+        """
+        Возвращает рабочий access_token пользователя.
+        Если токен истёк или скоро истечёт — пробует рефрешить.
+        Возвращает None, если рефреш невозможен.
+        """
+        access_token = user_row.get("twitch_access_token") or ""
+        refresh_tok = user_row.get("twitch_refresh_token") or ""
+        expires_raw = user_row.get("twitch_token_expires_at") or ""
+
+        if not access_token:
+            return None
+
+        # Если знаем время истечения — рефрешим заранее (за 5 минут)
+        if expires_raw:
+            try:
+                expires_at = float(expires_raw)
+                if time.time() < expires_at - 300:
+                    return access_token
+            except (TypeError, ValueError):
+                pass  # нечисловое значение — пробуем рефрешить
+
+        if not refresh_tok or not self._client_id or not self._client_secret:
+            log.warning(
+                "Нет refresh_token или client_id/secret для telegram_id=%s", telegram_id
+            )
+            return access_token  # всё равно вернём — может ещё работать
+
+        try:
+            token_data = await _oauth_refresh(
+                refresh_tok, self._client_id, self._client_secret
+            )
+        except Exception as exc:
+            log.warning(
+                "Не удалось рефрешить токен telegram_id=%s: %s", telegram_id, exc
+            )
+            return access_token  # fallback на старый
+
+        new_access = token_data.get("access_token", "")
+        new_refresh = token_data.get("refresh_token", refresh_tok)
+        expires_in = int(token_data.get("expires_in", 14400))
+        new_expires_at = str(time.time() + expires_in)
+
+        try:
+            await self._db.update_user_tokens(
+                telegram_id,
+                access_token=new_access,
+                refresh_token=new_refresh,
+                token_expires_at=new_expires_at,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Не удалось сохранить новые токены в БД: %s", exc)
+
+        log.info("Токен рефрешнут для telegram_id=%s", telegram_id)
+        return new_access
+
     async def create_clip_for_user(
         self,
         user_id: int,
@@ -104,7 +168,19 @@ class ClipService:
         """
         # Получаем токен стримера из БД
         user_row = await self._db.find_user_by_nick(twitch_nick)
-        access_token = (user_row or {}).get("twitch_access_token") or ""
+        if user_row is None:
+            return ClipResult(
+                False,
+                user_id,
+                twitch_nick,
+                error=(
+                    "Twitch-аккаунт не авторизован. "
+                    "Нажми «Подключить Twitch» в боте и пройди авторизацию."
+                ),
+            )
+
+        telegram_id = int(user_row["telegram_id"])
+        access_token = await self._get_valid_token(telegram_id, user_row)
         if not access_token:
             return ClipResult(
                 False,

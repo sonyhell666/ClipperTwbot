@@ -41,6 +41,28 @@ async def exchange_code(
             return payload
 
 
+async def refresh_token(
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> dict[str, Any]:
+    """Обновляет пару access/refresh токенов по refresh_token."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            OAUTH_URL,
+            params={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        ) as resp:
+            payload = await resp.json(content_type=None)
+            if resp.status != 200:
+                raise RuntimeError(f"Twitch refresh error: {payload}")
+            return payload
+
+
 async def fetch_login(access_token: str, client_id: str) -> tuple[str, str]:
     """Возвращает (login, user_id) по access_token."""
     async with aiohttp.ClientSession() as session:
