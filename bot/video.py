@@ -41,12 +41,12 @@ async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: s
         slug = clip_url.rstrip("/").split("/")[-1]
         gql = [
             {
-                "operationName": "VideoAccessToken_Clip",
+                "operationName": "ShareClipRenderStatus",
                 "variables": {"slug": slug},
                 "extensions": {
                     "persistedQuery": {
                         "version": 1,
-                        "sha256Hash": "36b89d2507fce29e5ca551df756d27c1cfe079e2609642b4390aa4c35796eb11",
+                        "sha256Hash": "0a02bb974443b576f5579aab0fef1d4b7f44e58a8a256f0c5adfead0db70640f",
                     }
                 },
             }
@@ -60,12 +60,14 @@ async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: s
                 return clip_url
             data = await resp.json()
             clip = (data or [{}])[0].get("data", {}).get("clip") or {}
-            qualities = clip.get("videoQualities") or []
-            if qualities:
-                # берём качество получше (обычно первое)
-                url = qualities[0].get("sourceURL")
-                if url:
-                    return url
+            assets = clip.get("assets") or []
+            for asset in assets:
+                if asset.get("aspectRatio", 0) > 1:  # LANDSCAPE
+                    qualities = asset.get("videoQualities") or []
+                    if qualities:
+                        url = qualities[0].get("sourceURL")
+                        if url:
+                            return url
     except Exception as exc:  # noqa: BLE001
         log.debug("GQL clip URL resolution failed for %s: %s", clip_url, exc)
     return clip_url
