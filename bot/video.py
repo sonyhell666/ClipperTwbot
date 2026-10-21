@@ -76,10 +76,22 @@ async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: s
                         if qualities:
                             break
             if qualities:
+                # В токене clip_uri указывает на конкретное качество — используем его
+                if sig and tok:
+                    try:
+                        import json as _json
+                        tok_data = _json.loads(tok)
+                        clip_uri = tok_data.get("clip_uri")
+                        if clip_uri:
+                            url = clip_uri
+                        else:
+                            url = qualities[0].get("sourceURL")
+                    except Exception:
+                        url = qualities[0].get("sourceURL")
+                    if url:
+                        return f"{url}?sig={sig}&token={quote(tok)}"
                 url = qualities[0].get("sourceURL")
                 if url:
-                    if sig and tok:
-                        url = f"{url}?sig={sig}&token={quote(tok)}"
                     return url
     except Exception as exc:  # noqa: BLE001
         log.debug("GQL clip URL resolution failed for %s: %s", clip_url, exc)
