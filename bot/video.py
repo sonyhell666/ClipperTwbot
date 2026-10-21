@@ -22,6 +22,56 @@ class VideoError(RuntimeError):
     """Ошибка скачивания или обработки видео."""
 
 
+
+def _is_mp4_file(path: Path) -> bool:
+    """Проверяет, что файл начинается с типичного MP4/ISOBMFF-заголовка."""
+    try:
+        head = path.read_bytes()[:32]
+        return b"ftyp" in head or b"moov" in head or b"mdat" in head
+    except OSError:
+        return False
+
+
+async def _resolve_clip_download_url(session: aiohttp.ClientSession, clip_url: str) -> str:
+    """
+    Пытается получить прямой URL видеофайла через публичный GQL-запрос Twitch.
+    Возвращает исходный clip_url, если GQL не сработал.
+    """
+    try:
+        slug = clip_url.rstrip("/").split("/")[-1]
+        gql = [
+            {
+                "operationName": "VideoAccessToken_Clip",
+                "variables": {"slug": slug},
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "36b89d2507fce29e5ca551df756d27c1cfe079e2609642b4390aa4c35796eb11",
+                    }
+                },
+            }
+        ]
+        async with session.post(
+            "https://gql.twitch.tv/gql",
+            json=gql,
+            headers={"Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko"},
+        ) as resp:
+            if resp.status != 200:
+                return clip_url
+            data = await resp.json()
+            clip = (data or [{}])[0].get("data", {}).get("clip") or {}
+            qualities = clip.get("videoQualities") or []
+            if qualities:
+                # берём качество получше (обычно первое)
+                url = qualities[0].get("sourceURL")
+                if url:
+                    return url
+    except Exception as exc:  # noqa: BLE001
+        log.debug("GQL clip URL resolution failed for %s: %s", clip_url, exc)
+    return clip_url
+
+
+
 async def download_clip(
     session: aiohttp.ClientSession,
     url: str,
@@ -29,10 +79,11 @@ async def download_clip(
     *,
     chunk_size: int = 1 << 16,
 ) -> Path:
-    """Скачивает клип по URL в файл dest."""
+    """Скачивает клип по URL в файл dest и проверяет, что это MP4, а не HTML."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    download_url = await _resolve_clip_download_url(session, url)
     try:
-        async with session.get(url) as resp:
+        async with session.get(download_url) as resp:
             if resp.status != 200:
                 raise VideoError(f"Не удалось скачать клип: HTTP {resp.status}")
             with dest.open("wb") as fh:
@@ -43,6 +94,12 @@ async def download_clip(
 
     if dest.stat().st_size == 0:
         raise VideoError("Скачанный файл клипа пуст")
+    if not _is_mp4_file(dest):
+        head = dest.read_bytes()[:200].decode("utf-8", errors="replace")
+        raise VideoError(
+            f"Скачанный файл не похож на видео (возможно, HTML-страница). "
+            f"Первые байты: {head!r}"
+        )
     log.info("Клип скачан: %s (%d байт)", dest, dest.stat().st_size)
     return dest
 
